@@ -2,14 +2,9 @@ import os
 import re
 import json
 import torch
-import random
-import numpy as np
-import seaborn as sns
 import torch.nn as nn
 from PIL import Image
 from pathlib import Path
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
 from torchvision import transforms
 from efficientnet_pytorch import EfficientNet
 from torch.utils.data import Dataset, DataLoader
@@ -99,7 +94,7 @@ class CarDataset(Dataset):
                     field: (
                         self.classes[field].index(labels[field])
                         if labels[field] is not None
-                        else random.choice(range(len(self.classes[field]))) # Change this such that if the label is missing, loss set to zero (masked loss)
+                        else -100 # Change this such that if the label is missing, loss set to zero (masked loss)
                     )
                     for field in fields
                 }
@@ -175,40 +170,6 @@ class MultiHeadEfficientNet(nn.Module):
 
 
 
-def viz_all(model, loader, device, tasks=None, n=500):
-    if tasks is None:
-        tasks = list(scene_tasks.keys()) + list(visibility_tasks.keys()) + list(image_quality_tasks.keys())
-    
-    model.eval()
-    feats, labels = [], {t: [] for t in tasks}
-    
-    with torch.no_grad():
-        for i, (imgs, lbls) in enumerate(loader):
-            if i * loader.batch_size >= n: break
-            feats.append(model.backbone(imgs.to(device)).cpu().numpy())
-            for t in tasks: labels[t].append(lbls[t].numpy())
-    
-    feats = np.concatenate(feats)
-    emb = TSNE(n_components=2, random_state=42).fit_transform(feats)
-    
-    fig, axs = plt.subplots(4, 4, figsize=(16, 16))
-    axs = axs.flatten()
-    
-    for i, t in enumerate(tasks[:16]):
-        y = np.concatenate(labels[t])
-        for j, c in enumerate(np.unique(y)):
-            axs[i].scatter(emb[y==c, 0], emb[y==c, 1], 
-                          c=[sns.color_palette("husl", len(np.unique(y)))[j]], 
-                          label=dataset.classes[t][c], s=20, alpha=0.7)
-        axs[i].set_title(t, fontsize=10)
-        axs[i].legend(fontsize=6)
-        axs[i].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('viz_all.png', dpi=200)
-    plt.show()
-
-
 # Define transforms
 transform = transforms.Compose(
     [
@@ -248,7 +209,6 @@ for task in visibility_tasks:
 for task in image_quality_tasks:
     criterion_dict[task] = nn.CrossEntropyLoss()
 
-
 num_epochs = 10
 
 for epoch in range(num_epochs):
@@ -262,31 +222,54 @@ for epoch in range(num_epochs):
         outputs = model(images)  # outputs: dict of dicts
 
         total_loss = 0
+        valid_tasks = []
+        skipped_tasks = []
 
         # Loop over heads
         for head_name in ["scene", "visibility", "image_quality"]:
             out = outputs[head_name]
             for task_name, task_output in out.items():
                 task_labels = labels_dict[task_name].to(device)
-                loss = criterion_dict[task_name](task_output, task_labels)
-                total_loss += loss
+                
+                # Check if there are any valid labels in this batch for this task
+                valid_mask = (task_labels != -100)
+                num_valid = valid_mask.sum().item()
+                
+                if num_valid > 0:  # Only compute loss if valid labels exist
+                    loss = criterion_dict[task_name](task_output, task_labels)
+                    
+                    # Additional safety check for nan
+                    if not torch.isnan(loss):
+                        total_loss += loss
+                        valid_tasks.append(f"{task_name}({num_valid}/{len(task_labels)})")
+                    else:
+                        skipped_tasks.append(f"{task_name}(NaN)")
+                else:
+                    skipped_tasks.append(f"{task_name}(0/{len(task_labels)})")
 
-        # Backward pass
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
-        running_loss += total_loss.item()
+        # Only backpropagate if we have at least one valid task loss
+        if len(valid_tasks) > 0:
+            # Backward pass
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            running_loss += total_loss.item()
 
-        if batch_idx % 10 == 0:
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], "
-                f"Batch [{batch_idx}/{len(train_loader)}], "
-                f"Loss: {total_loss.item():.4f}"
-            )
+            if batch_idx % 10 == 0:
+                print(
+                    f"Epoch [{epoch+1}/{num_epochs}], "
+                    f"Batch [{batch_idx}/{len(train_loader)}], "
+                    f"Loss: {total_loss.item():.4f}"
+                )
+                print(f"  Valid Tasks ({len(valid_tasks)}): {', '.join(valid_tasks)}")
+                if skipped_tasks:
+                    print(f"  Skipped Tasks ({len(skipped_tasks)}): {', '.join(skipped_tasks)}")
+        else:
+            if batch_idx % 10 == 0:
+                print(f"Batch [{batch_idx}] SKIPPED - No valid labels")
+                print(f"  All Tasks Skipped ({len(skipped_tasks)}): {', '.join(skipped_tasks)}")
 
     avg_loss = running_loss / len(train_loader)
-    print(f"Epoch [{epoch+1}/{num_epochs}] Average Loss: {avg_loss:.4f}")
-
-viz_all(model, train_loader, device)
+    print(f"\nEpoch [{epoch+1}/{num_epochs}] Average Loss: {avg_loss:.4f}\n")
 
 # print(f"Training complete. Output: {outputs}")
