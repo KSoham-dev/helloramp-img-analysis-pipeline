@@ -1,0 +1,3 @@
+freeze_backbone: true
+lr: 0.001
+model_name: efficientnet-b5
