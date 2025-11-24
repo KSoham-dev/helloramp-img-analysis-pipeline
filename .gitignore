@@ -13,4 +13,4 @@ wheels/
 # Data
 data/
 
-lightning_logs/lightning_logs/version_0/checkpoints/epoch=9-step=20.ckpt
+lightning_logs/lightning_logs
