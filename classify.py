@@ -109,8 +109,12 @@ class CarDataset(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert("RGB")
+        try:
+            img_path = self.image_paths[idx]
+            image = Image.open(img_path).convert("RGB")
+        except Exception as e:
+            print(f"Error loading image {img_path}: {e}")
+            raise
 
         if self.transform:
             image = self.transform(image)
@@ -234,7 +238,7 @@ class MultiHeadEfficientNet(pl.LightningModule):
         else:
             print(f"\nBatch [{batch_idx}] SKIPPED - No valid labels")
             print(f"  All Tasks Skipped ({len(skipped_tasks)}): {', '.join(skipped_tasks)}")
-            return None
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
 
     def validation_step(self, batch, batch_idx):
         images, labels_dict = batch
@@ -250,9 +254,11 @@ class MultiHeadEfficientNet(pl.LightningModule):
                 task_labels = labels_dict[task_name]
                 valid_mask = (task_labels != -100)
 
+                # Checking if the batch contains any valid_mask
                 if valid_mask.sum() > 0:
                     loss = self.criterion_dict[task_name](task_output, task_labels)
 
+                    # Another check to ensure that loss is not NaN for the entire batch
                     if not torch.isnan(loss):
                         total_loss += loss
                         task_losses[f"val/{task_name}_loss"] = loss.item()
@@ -264,7 +270,7 @@ class MultiHeadEfficientNet(pl.LightningModule):
             self.log_dict(task_losses, on_epoch=True)
             return total_loss
 
-        return None
+        return torch.tensor(0.0, device=self.device, requires_grad=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -327,6 +333,3 @@ if __name__ == "__main__":
     )
 
     trainer.fit(model, train_loader, val_loader)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
