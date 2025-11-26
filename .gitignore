@@ -13,4 +13,7 @@ wheels/
 # Data
 data/
 
-lightning_logs/lightning_logs
+lightning_logs
+yolo11*.pt
+runs/
+detection_*
